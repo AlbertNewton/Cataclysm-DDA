@@ -4,7 +4,7 @@
     "id": "MA",
     "name": "Massachusetts",
     "authors": [ "ZhilkinSerg" ],
-    "maintainers": [ "ZhilkinSerg" ],
+    "maintainers": [ "ZhilkinSerg", "AlbertNewton" ],
     "description": "Cataclysm in one state.",
     "category": "total_conversion",
     "dependencies": [ "dda" ]
