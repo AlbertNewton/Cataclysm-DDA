@@ -854,6 +854,8 @@ class vehicle
         std::map<vehicle *, float> search_connected_vehicles();
         //! @copydoc vehicle::search_connected_vehicles( Vehicle *start )
         std::map<const vehicle *, float> search_connected_vehicles() const;
+        //! @copydoc vehicle::search_connected_vehicles( Vehicle *start )
+        void get_connected_vehicles( std::unordered_set<vehicle *> &dest );
 
         /// Returns a map of connected battery references to power loss factor
         /// Keys are batteries in vehicles (includes self) connected by POWER_TRANSFER parts
@@ -982,6 +984,7 @@ class vehicle
         void plug_in( const tripoint &pos );
         void connect( const tripoint &source_pos, const tripoint &target_pos );
 
+        bool precollision_check( units::angle &angle, map &here, bool follow_protocol );
         // Try select any fuel for engine, returns true if some fuel is available
         bool auto_select_fuel( vehicle_part &vp );
         // Attempt to start an engine
@@ -2298,6 +2301,7 @@ class vehicle
         bool is_alarm_on = false;
         bool camera_on = false;
         bool autopilot_on = false;
+        bool precollision_on = true;
         // skidding mode
         bool skidding = false;
         // has bloody or smoking parts

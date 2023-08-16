@@ -713,6 +713,9 @@ void vehicle::drive_to_local_target( const tripoint &target, bool follow_protoco
 {
     Character &player_character = get_player_character();
     if( follow_protocol && player_character.in_vehicle ) {
+        sounds::sound( global_pos3(), 30, sounds::sound_t::alert,
+                       string_format( _( "the %s emitting a beep and saying \"Autonomous driving protocols suspended!\"" ),
+                                      name ) );
         stop_autodriving();
         return;
     }
@@ -720,6 +723,58 @@ void vehicle::drive_to_local_target( const tripoint &target, bool follow_protoco
     map &here = get_map();
     tripoint vehpos = global_square_location().raw();
     units::angle angle = get_angle_from_targ( target );
+
+    bool stop = precollision_check( angle, here, follow_protocol );
+    if( stop ) {
+        if( autopilot_on ) {
+            sounds::sound( global_pos3(), 30, sounds::sound_t::alert,
+                           string_format( _( "the %s emitting a beep and saying \"Obstacle detected!\"" ),
+                                          name ) );
+        }
+        stop_autodriving();
+        return;
+    }
+    int turn_x = get_turn_from_angle( angle, vehpos, target );
+    int accel_y = 0;
+    // best to cruise around at a safe velocity or 40mph, whichever is lowest
+    // accelerate when it doesn't need to turn.
+    // when following player, take distance to player into account.
+    // we really want to avoid running the player over.
+    // If its a helicopter, we dont need to worry about airborne obstacles so much
+    // And fuel efficiency is terrible at low speeds.
+    const int safe_player_follow_speed = 400 *
+                                         player_character.current_movement_mode()->move_speed_mult();
+    if( follow_protocol ) {
+        if( ( ( turn_x > 0 || turn_x < 0 ) && velocity > safe_player_follow_speed ) ||
+            rl_dist( vehpos, here.getabs( player_character.pos() ) ) < 7 + ( ( mount_max.y * 3 ) + 4 ) ) {
+            accel_y = 1;
+        }
+        if( ( velocity < std::min( safe_velocity(), safe_player_follow_speed ) && turn_x == 0 &&
+              rl_dist( vehpos, here.getabs( player_character.pos() ) ) > 8 + ( ( mount_max.y * 3 ) + 4 ) ) ||
+            velocity < 100 ) {
+            accel_y = -1;
+        }
+    } else {
+        if( ( turn_x > 0 || turn_x < 0 ) && velocity > 1000 ) {
+            accel_y = 1;
+        }
+        if( ( velocity < std::min( safe_velocity(), is_rotorcraft() &&
+                                   is_flying_in_air() ? 12000 : 32 * 100 ) && turn_x == 0 ) || velocity < 500 ) {
+            accel_y = -1;
+        }
+        if( is_patrolling && velocity > 400 ) {
+            accel_y = 1;
+        }
+    }
+    selfdrive( point( turn_x, accel_y ) );
+}
+
+bool vehicle::precollision_check( units::angle &angle, map &here, bool follow_protocol )
+{
+    if( !precollision_on ) {
+        return false;
+    }
+    Character &player_character = get_player_character();
     // now we got the angle to the target, we can work out when we are heading towards disaster.
     // Check the tileray in the direction we need to head towards.
     std::set<point> points_to_check = immediate_path( angle );
@@ -764,48 +819,7 @@ void vehicle::drive_to_local_target( const tripoint &target, bool follow_protoco
             }
         }
     }
-    if( stop ) {
-        if( autopilot_on ) {
-            sounds::sound( global_pos3(), 30, sounds::sound_t::alert,
-                           string_format( _( "the %s emitting a beep and saying \"Obstacle detected!\"" ),
-                                          name ) );
-        }
-        stop_autodriving();
-        return;
-    }
-    int turn_x = get_turn_from_angle( angle, vehpos, target );
-    int accel_y = 0;
-    // best to cruise around at a safe velocity or 40mph, whichever is lowest
-    // accelerate when it doesn't need to turn.
-    // when following player, take distance to player into account.
-    // we really want to avoid running the player over.
-    // If its a helicopter, we dont need to worry about airborne obstacles so much
-    // And fuel efficiency is terrible at low speeds.
-    const int safe_player_follow_speed = 400 *
-                                         player_character.current_movement_mode()->move_speed_mult();
-    if( follow_protocol ) {
-        if( ( ( turn_x > 0 || turn_x < 0 ) && velocity > safe_player_follow_speed ) ||
-            rl_dist( vehpos, here.getabs( player_character.pos() ) ) < 7 + ( ( mount_max.y * 3 ) + 4 ) ) {
-            accel_y = 1;
-        }
-        if( ( velocity < std::min( safe_velocity(), safe_player_follow_speed ) && turn_x == 0 &&
-              rl_dist( vehpos, here.getabs( player_character.pos() ) ) > 8 + ( ( mount_max.y * 3 ) + 4 ) ) ||
-            velocity < 100 ) {
-            accel_y = -1;
-        }
-    } else {
-        if( ( turn_x > 0 || turn_x < 0 ) && velocity > 1000 ) {
-            accel_y = 1;
-        }
-        if( ( velocity < std::min( safe_velocity(), is_rotorcraft() &&
-                                   is_flying_in_air() ? 12000 : 32 * 100 ) && turn_x == 0 ) || velocity < 500 ) {
-            accel_y = -1;
-        }
-        if( is_patrolling && velocity > 400 ) {
-            accel_y = 1;
-        }
-    }
-    selfdrive( point( turn_x, accel_y ) );
+    return stop;
 }
 
 units::angle vehicle::get_angle_from_targ( const tripoint &targ ) const
@@ -1162,7 +1176,7 @@ ret_val<void> vehicle::can_mount( const point &dp, const vpart_info &vpi ) const
     for( const int elem : parts_in_square ) {
         const vpart_info &vpi_other = part( elem ).info();
         // No part type can stack with itself, except power cables
-        if( vpi.id == vpi_other.id && !vpi.has_flag( "POWER_TRANSFER" ) ) {
+        if( vpi.id == vpi_other.id && !vpi.has_flag( VPFLAG_POWER_TRANSFER ) ) {
             return ret_val<void>::make_failure( _( "%s is already installed here." ), vpi.name() );
         }
         // Only parts with empty or different locations can be on same tile
@@ -5075,7 +5089,7 @@ std::map<Vehicle *, float> vehicle::search_connected_vehicles( Vehicle *start )
         for( const int part_idx : veh->loose_parts ) { // graph "edges" are POWER_TRANSFER parts
             const vehicle_part &vp = veh->part( part_idx );
             const vpart_info &vpi = vp.info();
-            if( !vpi.has_flag( "POWER_TRANSFER" ) ) {
+            if( !vpi.has_flag( VPFLAG_POWER_TRANSFER ) ) {
                 continue;
             }
 
@@ -5105,6 +5119,25 @@ std::map<vehicle *, float> vehicle::search_connected_vehicles()
 std::map<const vehicle *, float> vehicle::search_connected_vehicles() const
 {
     return search_connected_vehicles( this );
+}
+
+void vehicle::get_connected_vehicles( std::unordered_set<vehicle *> &dest )
+{
+    for( const int part_idx : loose_parts ) {
+        const vehicle_part &vp = part( part_idx );
+        if( !vp.info().has_flag( VPFLAG_POWER_TRANSFER ) ) {
+            continue;
+        }
+        vehicle *v_next = find_vehicle( tripoint_abs_ms( vp.target.second ) );
+        if( v_next == nullptr ) {
+            continue;
+        }
+        if( dest.find( v_next ) != dest.end() ) {
+            continue; // Already found
+        }
+        dest.insert( v_next );
+        v_next->get_connected_vehicles( dest );
+    }
 }
 
 std::map<vpart_reference, float> vehicle::search_connected_batteries()
@@ -5741,7 +5774,8 @@ void vehicle::gain_moves()
     // Force off-map connected vehicles to load by visiting them every time we gain moves.
     // This is expensive so we allow a slightly stale result
     if( calendar::once_every( 5_turns ) ) {
-        search_connected_vehicles();
+        std::unordered_set<vehicle *> vehs;
+        get_connected_vehicles( vehs );
     }
 
     if( check_environmental_effects ) {
@@ -5953,7 +5987,7 @@ void vehicle::refresh( const bool remove_fakes )
         if( vpi.has_flag( "FUNNEL" ) ) {
             funnels.push_back( p );
         }
-        if( vpi.has_flag( "UNMOUNT_ON_MOVE" ) || vpi.has_flag( "POWER_TRANSFER" ) ) {
+        if( vpi.has_flag( "UNMOUNT_ON_MOVE" ) || vpi.has_flag( VPFLAG_POWER_TRANSFER ) ) {
             loose_parts.push_back( p );
         }
         if( !vpi.emissions.empty() || !vpi.exhaust.empty() ) {
@@ -6602,7 +6636,7 @@ std::optional<std::pair<vehicle *, vehicle_part *>> vehicle::get_remote_part(
         const tripoint local_abs = get_map().getabs( global_part_pos3( vp_local ) );
         for( const int remote_partnum : veh->loose_parts ) {
             vehicle_part &vp_remote = veh->parts[remote_partnum];
-            if( vp_remote.info().has_flag( "POWER_TRANSFER" ) && vp_remote.target.first == local_abs ) {
+            if( vp_remote.info().has_flag( VPFLAG_POWER_TRANSFER ) && vp_remote.target.first == local_abs ) {
                 return std::make_pair( veh, &vp_remote );
             }
         }
@@ -6634,7 +6668,7 @@ void vehicle::shed_loose_parts( const trinary shed_cables, const tripoint_bub_ms
             // part was removed elsewhere
             continue;
         }
-        if( vpi_loose.has_flag( "POWER_TRANSFER" ) ) {
+        if( vpi_loose.has_flag( VPFLAG_POWER_TRANSFER ) ) {
             if( shed_cables == trinary::NONE ) {
                 // Skip cables if we're only calling shed_loose_parts to remove parts with UNMOUNT_ON_MOVE.
                 continue;
@@ -6954,7 +6988,7 @@ int vehicle::break_off( map &here, vehicle_part &vp, int dmg )
                 // Tow cables - remove it in one piece, remove remote part, and remove towing data
                 add_msg_if_player_sees( pos, m_bad, _( "The %1$s's %2$s is disconnected!" ), name, vp_here.name() );
                 invalidate_towing( true );
-            } else if( vpi_here.has_flag( "POWER_TRANSFER" ) ) {
+            } else if( vpi_here.has_flag( VPFLAG_POWER_TRANSFER ) ) {
                 // Electrical cables - remove it in one piece and remove remote part
                 add_msg_if_player_sees( pos, m_bad, _( "The %1$s's %2$s is disconnected!" ), name, vp_here.name() );
                 here.add_item_or_charges( pos, part_to_item( vp_here ) );
@@ -6982,7 +7016,7 @@ int vehicle::break_off( map &here, vehicle_part &vp, int dmg )
             // Tow cables - remove it in one piece, remove remote part, and remove towing data
             add_msg_if_player_sees( pos, m_bad, _( "The %1$s's %2$s is disconnected!" ), name, vp.name() );
             invalidate_towing( true );
-        } else if( vpi.has_flag( "POWER_TRANSFER" ) ) {
+        } else if( vpi.has_flag( VPFLAG_POWER_TRANSFER ) ) {
             // Electrical cables - remove it in one piece and remove remote part
             add_msg_if_player_sees( pos, m_bad, _( "The %1$s's %2$s is disconnected!" ), name, vp.name() );
             here.add_item_or_charges( pos, part_to_item( vp ) );
@@ -7018,7 +7052,7 @@ int vehicle::break_off( map &here, vehicle_part &vp, int dmg )
                     if( vpi_here.has_flag( "TOW_CABLE" ) ) {
                         invalidate_towing( true );
                     } else {
-                        if( vpi_here.has_flag( "POWER_TRANSFER" ) ) {
+                        if( vpi_here.has_flag( VPFLAG_POWER_TRANSFER ) ) {
                             remove_remote_part( vp_here );
                         }
                         here.add_item_or_charges( pos, part_to_item( vp_here ) );
@@ -7126,7 +7160,7 @@ int vehicle::damage_direct( map &here, vehicle_part &vp, int dmg, const damage_t
         } else {
             item part_as_item = part_to_item( vp );
             add_msg_if_player_sees( vppos, m_bad, _( "The %1$s's %2$s is disconnected!" ), name, vp.name() );
-            if( vpi.has_flag( "POWER_TRANSFER" ) ) {
+            if( vpi.has_flag( VPFLAG_POWER_TRANSFER ) ) {
                 remove_remote_part( vp );
                 part_as_item.set_damage( 0 );
             } else {
